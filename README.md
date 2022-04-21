@@ -28,19 +28,25 @@ pip install osgeo
 
 ![image](demo/ST221.jpg)
 
+## de-array
+
 Automatically de-array with at least only one parameter:
 
 ~~~bash
 python ada.py demo/ST221.jpg -c 6
 ~~~
 
-![image](demo/ST221.de-array.jpg)
+Specific more parameters to get better performance.
 
 **-d** core diameter in pixels
 
 **-c** number of columns
 
 **-r** number of rows
+
+![image](demo/ST221.de-array.jpg)
+
+You can edit the *.csv* file to correct unexcept results.
 
 | name | col | row | x    | y   | w   | h   | QC_pass |
 |------|-----|-----|------|-----|-----|-----|---------|
@@ -69,9 +75,7 @@ python ada.py demo/ST221.jpg -c 6
 |   F3 |   5 |   2 | 1309 | 560 | 260 | 225 |   False |
 |   F4 |   5 |   3 | 1307 | 787 | 254 | 283 |    True |
 
-Specific more parameters to get better performance.
-
-You can edit the *.csv* file to correct unexcept results.
+## extract
 
 Then, extract de-arrayed cores automatically.
 
