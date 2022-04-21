@@ -2,7 +2,7 @@
 
 # requirements
 
-Only need *pandas*, *numpy*, *pillow* and *py-opencv* to be installed.
+Only *pandas*, *numpy*, *pillow* and *py-opencv* need to be installed.
 
 install using anaconda
 ~~~bash
@@ -42,8 +42,6 @@ python ada.py demo/ST221.jpg -c 6
 
 **-r** number of rows
 
-Specific more parameters to get better performance !
-
 | name | col | row | x    | y   | w   | h   | QC_pass |
 |------|-----|-----|------|-----|-----|-----|---------|
 |   A1 |   0 |   0 |    0 |  18 | 251 | 260 |    True |
@@ -71,9 +69,11 @@ Specific more parameters to get better performance !
 |   F3 |   5 |   2 | 1309 | 560 | 260 | 225 |   False |
 |   F4 |   5 |   3 | 1307 | 787 | 254 | 283 |    True |
 
+Specific more parameters to get better performance.
+
 You can edit the *.csv* file to correct unexcept results.
 
-Then you can extract de-arrayed cores automatically.
+Then, extract de-arrayed cores automatically.
 
 ~~~bash
 python extract.py demo/ST221.jpg -q 30

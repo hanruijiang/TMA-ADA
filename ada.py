@@ -94,12 +94,12 @@ def get_cores(thumb, core_diameter, downsample, num_columns, num_rows):
         if num_rows > 0:
             mask_x = mask.sum(axis=1).astype('uint16')
             th_x, _ = cv2.threshold(mask_x, 0, max(mask_x), cv2.THRESH_OTSU)
-            core_d.append(sum(mask_x > th_x) / num_rows / 2)
+            core_d.append(sum(mask_x > th_x) / num_rows)
 
         if num_columns > 0:
             mask_y = mask.sum(axis=0).astype('uint16')
             th_y, _ = cv2.threshold(mask_y, 0, max(mask_y), cv2.THRESH_OTSU)
-            core_d.append(sum(mask_y > th_y) / num_columns / 2)
+            core_d.append(sum(mask_y > th_y) / num_columns)
 
         core_d = int(np.mean(core_d) * 1.2)
 
@@ -109,9 +109,9 @@ def get_cores(thumb, core_diameter, downsample, num_columns, num_rows):
 
         core_d = int(np.ceil(core_diameter / downsample))
         
-    k2 = int(np.ceil(core_diameter / downsample / 32))
+    k2 = int(np.ceil(core_diameter / downsample / 64))
     k2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k2, k2))
-    k8 = int(np.ceil(core_diameter / downsample / 8))
+    k8 = int(np.ceil(core_diameter / downsample / 16))
     k8 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k8, k8))
 
     mask = (mask * 255).astype('uint8')
@@ -123,8 +123,8 @@ def get_cores(thumb, core_diameter, downsample, num_columns, num_rows):
     
     num_labels, labels, stats, centers = cv2.connectedComponentsWithStats(mask, connectivity=8, ltype=cv2.CV_32S)
 
-    th_min = core_d * 2 * 0.55
-    th_max = core_d * 2 / 0.55
+    th_min = core_d * 0.55
+    th_max = core_d / 0.55
 
     cores = list()
     for i, (x, y, w, h, area) in enumerate(stats):
@@ -166,7 +166,7 @@ def get_array(cores, core_d):
                 delta = abs(xs[ref] - xs[j])
                 if last is not None and delta > last:
                     break
-                if delta < core_d:
+                if delta < core_d / 2:
                     col.append(j)
                     break
                 last = delta
@@ -196,7 +196,7 @@ def get_array(cores, core_d):
                 delta = abs(ys[ref] - ys[j])
                 if last is not None and delta > last:
                     break
-                if delta < core_d:
+                if delta < core_d / 2:
                     row.append(j)
                     break
                 last = delta
@@ -232,7 +232,7 @@ def get_array(cores, core_d):
 
 def standardize_array(array, core_d):
     
-    border = core_d // 6
+    border = core_d // 12
 
     ws, hs = list(), list()
 
@@ -453,9 +453,9 @@ def visualize(thumb, results, downsample, core_d):
 
         color = (0, 255, 0) if QC_pass else (255, 0, 0)
 
-        cv2.rectangle(vis, (x, y), (x + w, y + h), color, thickness=core_d // 8)
+        cv2.rectangle(vis, (x, y), (x + w, y + h), color, thickness=core_d // 16)
 
-        cv2.putText(vis, name, org=(x + core_d // 3, y + core_d), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=core_d / 32, color=0, thickness=core_d // 8)
+        cv2.putText(vis, name, org=(x + core_d // 6, y + core_d // 2), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=core_d / 64, color=0, thickness=core_d // 16)
         
     return Image.fromarray(vis)
 
