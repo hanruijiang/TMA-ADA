@@ -6,6 +6,20 @@ Image.MAX_IMAGE_PIXELS = None
 import cv2
 
 
+def get_downsample(width, height, core_diameter, num_columns, num_rows):
+    
+    downsample = list()
+
+    if core_diameter > 0:
+        downsample.append(core_diameter / 128)
+    if num_columns > 0:
+        downsample.append(width / (num_columns * 200))
+    if num_rows > 0:
+        downsample.append(height / (num_rows * 200))
+
+    return max(1, int(np.floor(min(downsample))))
+
+
 try:
     
     from osgeo import gdal
@@ -18,16 +32,7 @@ try:
 
         Level0 = slide.GetRasterBand(1)
         
-        downsample = list()
-
-        if core_diameter > 0:
-            downsample.append(core_diameter / 128)
-        if num_columns > 0:
-            downsample.append(Level0.XSize / (num_columns * 200))
-        if num_rows > 0:
-            downsample.append(Level0.YSize / (num_rows * 200))
-
-        downsample = max(1, int(np.floor(min(downsample))))
+        downsample = get_downsample(Level0.XSize, Level0.YSize, core_diameter, num_columns, num_rows)
 
         level = -1
         for i in range(Level0.GetOverviewCount()):
@@ -58,17 +63,8 @@ except:
     def get_thumbnail(path, core_diameter, num_columns, num_rows):
 
         img = Image.open(path)
-            
-        downsample = list()
-            
-        if core_diameter > 0:
-            downsample.append(core_diameter / 128)
-        if num_columns > 0:
-            downsample.append(img.size[0] / (num_columns * 200))
-        if num_rows > 0:
-            downsample.append(img.size[1] / (num_rows * 200))
-
-        downsample = max(1, int(np.floor(min(downsample))))
+        
+        downsample = get_downsample(img.size[0], img.size[1], core_diameter, num_columns, num_rows)
             
         if downsample > 1:
             thumb = img.resize((img.size[0] // downsample, img.size[1] // downsample), Image.NEAREST)
@@ -77,8 +73,8 @@ except:
 
         return thumb.convert('RGB'), downsample
     
-
-def get_cores(thumb, core_diameter, downsample, num_columns, num_rows):
+    
+def get_mask(thumb, core_diameter, downsample, num_columns, num_rows):
     
     hsv = np.asarray(thumb.convert('HSV'))
 
@@ -87,45 +83,131 @@ def get_cores(thumb, core_diameter, downsample, num_columns, num_rows):
     
     mask = ((hsv[..., 1] > th_1) + (hsv[..., 2] < th_2)).astype('uint8')
     
+    # estimate core diameter and spacing
+    
     if core_diameter <= 0:
+    
+        mask_x = mask.sum(axis=1).astype('uint16')
+        mask_y = mask.sum(axis=0).astype('uint16')
     
         core_d = list()
 
         if num_rows > 0:
-            mask_x = mask.sum(axis=1).astype('uint16')
             th_x, _ = cv2.threshold(mask_x, 0, max(mask_x), cv2.THRESH_OTSU)
             core_d.append(sum(mask_x > th_x) / num_rows)
 
         if num_columns > 0:
-            mask_y = mask.sum(axis=0).astype('uint16')
             th_y, _ = cv2.threshold(mask_y, 0, max(mask_y), cv2.THRESH_OTSU)
             core_d.append(sum(mask_y > th_y) / num_columns)
 
         core_d = int(np.mean(core_d) * 1.2)
 
         core_diameter = int(core_d * downsample)
+        
+        spacing = list()
+        
+        if num_rows > 0:
+            
+            valid_w, last_start, last_end = 0, -1, -1
+            for i, valid in enumerate(mask_x > th_x):
+                if valid:
+                    if last_start == -1:
+                        last_start = i
+                    last_end = i
+                else:
+                    if i - last_end > core_d * 2:
+                        valid_w += last_end - last_start + 1
+                        last_start, last_end = -1, -1
+            if last_start != -1:
+                valid_w += last_end - last_start + 1
+                
+            spacing.append(valid_w / num_rows)
+
+        if num_columns > 0:
+            
+            valid_h, last_start, last_end = 0, -1, -1
+            for i, valid in enumerate(mask_y > th_y):
+                if valid:
+                    if last_start == -1:
+                        last_start = i
+                    last_end = i
+                else:
+                    if i - last_end > core_d * 2:
+                        valid_h += last_end - last_start + 1
+                        last_start, last_end = -1, -1
+            if last_start != -1:
+                valid_h += last_end - last_start + 1
+                
+            spacing.append(valid_h / num_columns)
+            
+        spacing = max(0, min(spacing) - core_d)
+        n_close = min(2, max(1, int(np.floor(spacing / (core_d / 8)))))
+        n_open = max(1, 4 - int(np.round(spacing / (core_d / 8))))
 
     else:
 
         core_d = int(np.ceil(core_diameter / downsample))
+        n_close = 3
+        n_open = 2
         
+    # adjust mask
+    
     k2 = int(np.ceil(core_diameter / downsample / 64))
     k2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k2, k2))
     k8 = int(np.ceil(core_diameter / downsample / 16))
     k8 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k8, k8))
+    k16 = int(np.ceil(core_diameter / downsample / 8))
+    k16 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k16, k16))
 
     mask = (mask * 255).astype('uint8')
-
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k2, iterations=3)
+    
+    ## drop isolated pixels
+    
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k2, iterations=2)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k2, iterations=1)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k8, iterations=3)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k8, iterations=4)
+    
+    ## close & fill holes
+        
+    mask = cv2.dilate(mask, k8, iterations=n_close)
+    
+    o = 0
+    while True:
+        if mask[o, o] == 0:
+            break
+        if mask[o, mask.shape[1] - o - 1] == 0:
+            break
+        if mask[mask.shape[0] - o - 1, o] == 0:
+            break
+        if mask[mask.shape[0] - o - 1, mask.shape[1] - o - 1] == 0:
+            break
+        o += 1
+
+    mask_for_fill = mask.copy()
+    cv2.floodFill(mask_for_fill, np.zeros((mask.shape[0]+2, mask.shape[1]+2), np.uint8), (o, o), 255)
+    cv2.floodFill(mask_for_fill, np.zeros((mask.shape[0]+2, mask.shape[1]+2), np.uint8), (mask.shape[1] - o - 1, o), 255)
+    cv2.floodFill(mask_for_fill, np.zeros((mask.shape[0]+2, mask.shape[1]+2), np.uint8), (o, mask.shape[0] - o - 1), 255)
+    cv2.floodFill(mask_for_fill, np.zeros((mask.shape[0]+2, mask.shape[1]+2), np.uint8), (mask.shape[1] - o - 1, mask.shape[0] - o - 1), 255)
+    mask_for_fill = cv2.bitwise_not(mask_for_fill)
+    mask_for_fill = cv2.dilate(mask_for_fill, k2, iterations=1)
+    mask = mask | mask_for_fill
+
+    mask = cv2.erode(mask, k8, iterations=n_close)
+    
+    ## close
+        
+    mask = cv2.erode(mask, k16, iterations=n_open)
+    mask = cv2.dilate(mask, k16, iterations=min(n_open, 3))
+    
+    return mask, core_diameter, core_d
+
+
+def get_cores(mask, core_d):
     
     num_labels, labels, stats, centers = cv2.connectedComponentsWithStats(mask, connectivity=8, ltype=cv2.CV_32S)
 
     th_min = core_d * 0.55
     th_max = core_d / 0.55
-
+    
     cores = list()
     for i, (x, y, w, h, area) in enumerate(stats):
 
@@ -138,13 +220,15 @@ def get_cores(thumb, core_diameter, downsample, num_columns, num_rows):
 
         cores.append([m, x, y, w, h, area])
     
-    return cores, core_diameter, core_d
+    return cores
     
     
 def get_array(cores, core_d):
 
     xs = [x + w / 2 for m, x, y, w, h, area in cores]
     ys = [y + h / 2 for m, x, y, w, h, area in cores]
+    
+    # assign columns
 
     cols = list()
     unprocessed = set(range(len(cores)))
@@ -152,7 +236,6 @@ def get_array(cores, core_d):
     while len(unprocessed) > 0:
 
         i = min(unprocessed, key=lambda j: xs[j])
-        min_x = xs[i]
 
         col = [i]
         unvisited = [j for j in unprocessed if j != i]
@@ -175,6 +258,8 @@ def get_array(cores, core_d):
 
         cols.append(col)
         unprocessed = unprocessed.difference(col)
+    
+    # assign rows
 
     rows = list()
     unprocessed = set(range(len(cores)))
@@ -182,29 +267,30 @@ def get_array(cores, core_d):
     while len(unprocessed) > 0:
 
         i = min(unprocessed, key=lambda j: ys[j])
-        min_y = ys[i]
 
-        row = [i]
+        col = [i]
         unvisited = [j for j in unprocessed if j != i]
 
         while len(unvisited) > 0:
 
-            j = min(unvisited, key=lambda k: min([abs(xs[k] - xs[l]) for l in row]))
+            j = min(unvisited, key=lambda k: min([abs(xs[k] - xs[l]) for l in col]))
 
             last = None
-            for ref in sorted(row, key=lambda l: abs(xs[j] - xs[l])):
+            for ref in sorted(col, key=lambda l: abs(xs[j] - xs[l])):
                 delta = abs(ys[ref] - ys[j])
                 if last is not None and delta > last:
                     break
                 if delta < core_d / 2:
-                    row.append(j)
+                    col.append(j)
                     break
                 last = delta
 
             unvisited.remove(j)
 
-        rows.append(row)
-        unprocessed = unprocessed.difference(row)
+        rows.append(col)
+        unprocessed = unprocessed.difference(col)
+        
+    # assign coords
     
     coords = [[None, None] for _ in range(len(cores))]
 
@@ -212,9 +298,11 @@ def get_array(cores, core_d):
         for j in col:
             coords[j][0] = i
 
-    for i, row in enumerate(rows):
-        for j in row:
+    for i, col in enumerate(rows):
+        for j in col:
             coords[j][1] = i
+            
+    # assign array
         
     array = [[None for _ in range(len(rows))] for _ in range(len(cols))]
 
@@ -230,14 +318,50 @@ def get_array(cores, core_d):
     return array
 
 
-def standardize_array(array, core_d):
+def get_neighbors(array, i, j):
+    
+    up = None if j == 0 else array[i][j - 1]
+    down = None if j == len(array[i]) - 1 else array[i][j + 1]
+    left = None if i == 0 else array[i-1][j]
+    right = None if i == len(array) - 1 else array[i+1][j]
+
+    up_ = None
+    for k in range(j - 1, -1, -1):
+        if array[i][k] is not None:
+            up_ = array[i][k]
+            break
+
+    down_ = None
+    for k in range(j + 1, len(array[i])):
+        if array[i][k] is not None:
+            down_ = array[i][k]
+            break
+
+    left_ = None
+    for k in range(i - 1, -1, -1):
+        if array[k][j] is not None:
+            left_ = array[k][j]
+            break
+
+    right_ = None
+    for k in range(i + 1, len(array)):
+        if array[k][j] is not None:
+            right_ = array[k][j]
+            break
+        
+    return up, down, left, right, up_, down_, left_, right_
+
+
+def adjust_array(array, core_d):
     
     border = core_d // 12
+    
+    # estimate width & height
 
     ws, hs = list(), list()
 
-    for i, row in enumerate(array):
-        for j, box in enumerate(row):
+    for i, col in enumerate(array):
+        for j, box in enumerate(col):
 
             if box is None:
                 continue
@@ -248,17 +372,19 @@ def standardize_array(array, core_d):
             hs.append(h)
 
     w_mean, h_mean = int(np.mean(ws)), int(np.mean(hs))
+    
+    # align cores
 
-    for i, row in enumerate(array):
-        for j, box in enumerate(row):
+    for i, col in enumerate(array):
+        for j, box in enumerate(col):
             
             if box is None:
                 continue
 
             x, y, w, h = box
 
-            up = None if j == 0 else row[j - 1]
-            down = None if j == len(row) - 1 else row[j + 1]
+            up = None if j == 0 else col[j - 1]
+            down = None if j == len(col) - 1 else col[j + 1]
             left = None if i == 0 else array[i-1][j]
             right = None if i == len(array) - 1 else array[i+1][j]
 
@@ -307,9 +433,11 @@ def standardize_array(array, core_d):
             y_max = max(y + h, y_max)
 
             array[i][j] = x_min, y_min, x_max - x_min, y_max - y_min
+            
+    # extend border
     
-    for i, row in enumerate(array):
-        for j, box in enumerate(row):
+    for i, col in enumerate(array):
+        for j, box in enumerate(col):
             
             if box is None:
                 continue
@@ -329,57 +457,109 @@ def standardize_array(array, core_d):
                     x_max = min(x_max, (x_max + right[0] - 2) // 2)
 
             if j > 0:
-                up = row[j - 1]
+                up = col[j - 1]
                 if up is not None:
                     y_min = max(y_min, up[1] + up[3] + 2)
                 
-            if j < len(row) - 1:
-                down = row[j + 1]
+            if j < len(col) - 1:
+                down = col[j + 1]
                 if down is not None:
                     y_max = min(y_max, (y_max + down[1] - 2) // 2)
 
             array[i][j] = x_min, y_min, x_max - x_min, y_max - y_min
+
+
+def check_array(array, core_d, num_columns, num_rows):
+    
+    # drop unexpected columns & rows
+    
+    dropped = list()
+
+    if num_columns > 0 and len(array) > num_columns:
+        cols = sorted(range(len(array)), key=lambda c: len([1 for i in array[c] if i is not None]))
+        for c in sorted(cols[:len(cols) - num_columns], reverse=True):
+            dropped.extend(array.pop(c))
+
+    if num_rows > 0 and len(array[0]) > num_rows:
+        rows = sorted(range(len(array[0])), key=lambda r: len([1 for col in array if col[r] is not None]))
+        for r in sorted(rows[:len(rows) - num_rows], reverse=True):
+            for col in array:
+                dropped.append(col.pop(r))
+                
+    # drop empty columns & rows
+                
+    for i in range(len(array)-1, -1, -1):
+        if len([1 for box in array[i] if box is not None]) == 0:
+            array.pop(i)
+    
+    for i in range(len(array[0])-1, -1, -1):
+        if len([1 for k in range(len(array)) if array[k][i] is not None]) == 0:
+            for col in array:
+                col.pop(i)
+                
+    # rearrange dropped cores
+
+    for i, col in enumerate(array):
+        for j, box in enumerate(col):
+            
+            if box is not None:
+                continue
+
+            up, down, left, right, up_, down_, left_, right_ = get_neighbors(array, i, j)
+            
+            x_min, x_max = list(), list()
+            if up_ is not None:
+                x_min.append(up_[0])
+                x_max.append(up_[0] + up_[2])
+            if down_ is not None:
+                x_min.append(down_[0])
+                x_max.append(down_[0] + down_[2])
+            x_min, x_max = min(x_min) - core_d // 4, max(x_max) + core_d // 4
+            
+            y_min, y_max = list(), list()
+            if left_ is not None:
+                y_min.append(left_[1])
+                y_max.append(left_[1] + left_[3])
+            if right_ is not None:
+                y_min.append(right_[1])
+                y_max.append(right_[1] + right_[3])
+            y_min, y_max = min(y_min) - core_d // 4, max(y_max) + core_d // 4
+
+            matches = list()
+            for k in range(len(dropped) - 1, -1, -1):
+
+                if dropped[k] is None:
+                    dropped.pop(k)
+                    continue
+
+                x, y, w, h = dropped[k]
+                if x >= x_min and x + w <= x_max and y >= y_min and y + h <= y_max:
+                    matches.append(dropped.pop(k))
+
+            if len(matches) > 0:
+
+                x = min([m[0] for m in matches])
+                y = min([m[1] for m in matches])
+                w = max([m[0] + m[2] for m in matches]) - x
+                h = min([m[1] + m[3] for m in matches]) - y
+
+                array[i][j] = (x, y, w, h)
             
             
 def get_results(array, width, height, downsample):
     
     results = list()
 
-    for i, row in enumerate(array):
-        for j, box in enumerate(row):
+    for i, col in enumerate(array):
+        for j, box in enumerate(col):
 
             QC_pass = box is not None
 
-            up = None if j == 0 else row[j - 1]
-            down = None if j == len(row) - 1 else row[j + 1]
-            left = None if i == 0 else array[i-1][j]
-            right = None if i == len(array) - 1 else array[i+1][j]
-
             if not QC_pass:
+                
+                # estimate missing cores
 
-                up_ = None
-                for k in range(j - 1, -1, -1):
-                    if row[k] is not None:
-                        up_ = row[k]
-                        break
-
-                down_ = None
-                for k in range(j + 1, len(row)):
-                    if row[k] is not None:
-                        down_ = row[k]
-                        break
-
-                left_ = None
-                for k in range(i - 1, -1, -1):
-                    if array[k][j] is not None:
-                        left_ = array[k][j]
-                        break
-
-                right_ = None
-                for k in range(i + 1, len(array)):
-                    if array[k][j] is not None:
-                        right_ = array[k][j]
-                        break
+                up, down, left, right, up_, down_, left_, right_ = get_neighbors(array, i, j)
 
                 if up_ is None:
                     x, w = down_[0], down_[2]
@@ -397,21 +577,23 @@ def get_results(array, width, height, downsample):
                         y = (y + right_[1]) // 2
                         h = (h + right_[3]) // 2
 
-                if up is not None:
-                    y = max(y, up[1] + up[3] + 2)
-
                 if down is not None:
                     h = min(h, down[1] - y - 2)
 
-                if left is not None:
-                    x = max(x, left[0] + left[2] + 2)
+                if up is not None:
+                    y = max(y, up[1] + up[3] + 2)
 
                 if right is not None:
                     w = min(w, right[0] - x - 2)
 
+                if left is not None:
+                    x = max(x, left[0] + left[2] + 2)
+
             else:
 
                 x, y, w, h = box
+                
+            # adjust box
                 
             x_min, x_max, y_min, y_max = x, x + w, y, y + h
             x_min, x_max, y_min, y_max = max(x_min, 0), min(x_max, width), max(y_min, 0), min(y_max, height)
@@ -422,25 +604,6 @@ def get_results(array, width, height, downsample):
     results = pd.DataFrame(results, columns=['col', 'row', 'x', 'y', 'w', 'h', 'QC_pass'])
     
     return results
-
-
-def check_results(results, num_columns, num_rows):
-
-    cols = results.query('QC_pass')['col'].unique()
-    if num_columns > 0 and num_columns < len(cols):
-        cols = sorted(cols, key=lambda c: results.query(f'QC_pass and col == {c}').shape[0])
-        for c in cols[:len(cols) - num_columns]:
-            results.drop(results.query(f'col == {c}').index, axis=0, inplace=True)
-        for i, c in enumerate(sorted(cols[len(cols) - num_columns:])):
-            results.loc[results.query(f'col == {c}').index, 'col'] = i
-
-    rows = results.query('QC_pass')['row'].unique()
-    if num_rows > 0 and num_rows < len(rows):
-        rows = sorted(rows, key=lambda r: results.query(f'QC_pass and row == {r}').shape[0])
-        for r in rows[:len(rows) - num_rows]:
-            results.drop(results.query(f'row == {r}').index, axis=0, inplace=True)
-        for i, r in enumerate(sorted(rows[len(rows) - num_rows:])):
-            results.loc[results.query(f'row == {r}').index, 'row'] = i
     
 
 def visualize(thumb, results, downsample, core_d):
@@ -448,10 +611,10 @@ def visualize(thumb, results, downsample, core_d):
     vis = np.asarray(thumb)
 
     for name, c, r, x, y, w, h, QC_pass in results.itertuples(name=None):
-        
-        x, y, w, h = x // downsample, y // downsample, w // downsample, h // downsample
 
         color = (0, 255, 0) if QC_pass else (255, 0, 0)
+        
+        x, y, w, h = x // downsample, y // downsample, w // downsample, h // downsample
 
         cv2.rectangle(vis, (x, y), (x + w, y + h), color, thickness=core_d // 16)
 
@@ -464,32 +627,36 @@ def de_array(path, core_diameter, num_columns, num_rows):
     
     thumb, downsample = get_thumbnail(path, core_diameter, num_columns, num_rows)
     
-    cores, core_diameter, core_d = get_cores(thumb, core_diameter, downsample, num_columns, num_rows)
-        
+    mask, core_diameter, core_d = get_mask(thumb, core_diameter, downsample, num_columns, num_rows)
+    
+    cores = get_cores(mask, core_d)
+    
     if len(cores) == 0:
         print(f'ERROR: can not find candidate cores {path}')
         return pd.DataFrame(columns=['col', 'row', 'x', 'y', 'w', 'h', 'QC_pass']), thumb
     
     array = get_array(cores, core_d)
+
+    adjust_array(array, core_d)
     
-    standardize_array(array, core_d)
+    valid_cores = sum([len([1 for i in col if i is not None]) for col in array])
+    
+    check_array(array, core_d, num_columns, num_rows)
+    
+    if num_columns > 0 and num_columns != len(array):
+        print(f'WARNING: number of detected columns can\'t match input parameter {path} {len(array)} != {num_columns}')
+    if num_rows > 0 and num_rows != len(array[0]):
+        print(f'WARNING: number of detected rows can\'t match input parameter {path} {len(array[0])} != {num_rows}')
+        
+    th_d = min(len(array), len(array[0])) // 2
+    if valid_cores - sum([len([1 for i in col if i is not None]) for col in array]) > th_d:
+        print(f'WARNING: drop too many cores {path}')
         
     if len(array) == 0 or len(array[0]) == 0:
         print(f'ERROR: can not group cores into rows and cols {path}')
         return pd.DataFrame(columns=['col', 'row', 'x', 'y', 'w', 'h', 'QC_pass']), thumb
         
     results = get_results(array, thumb.size[0], thumb.size[1], downsample)
-        
-    valid_cores = results.query('QC_pass').shape[0]
-    
-    check_results(results, num_columns, num_rows)
-    
-    cols = results.query('QC_pass')['col'].unique()
-    rows = results.query('QC_pass')['row'].unique()
-
-    th_d = min(len(cols), len(rows)) // 2
-    if valid_cores - results.query('QC_pass').shape[0] > th_d:
-        print(f'WARNING: drop too many cores {path}')
         
     results['name'] = [f'{chr(c + 65)}{r + 1}' for c, r in zip(results['col'], results['row'])]
     results.set_index('name', inplace=True)
