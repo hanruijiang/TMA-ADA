@@ -1,5 +1,9 @@
 # Tissue Microarray Auto De-Array
 
+A python script for spliting & extracting cores from TMA slides automatically.
+
+![image](demo/ST221.de-array.jpg)
+
 # requirements
 
 Only *pandas*, *numpy*, *pillow* and *py-opencv* need to be installed.
@@ -26,8 +30,6 @@ pip install osgeo
 
 # usage
 
-![image](demo/ST221.jpg)
-
 ## de-array
 
 Automatically de-array with at least only one parameter:
@@ -43,8 +45,6 @@ Specific more parameters to get better performance.
 **-c** number of columns
 
 **-r** number of rows
-
-![image](demo/ST221.de-array.jpg)
 
 You can edit the *.csv* file to correct unexcept results.
 
