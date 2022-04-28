@@ -80,8 +80,9 @@ def get_mask(thumb, core_diameter, downsample, num_columns, num_rows):
 
     th_1, _ = cv2.threshold(hsv[..., 1], 0, 255, cv2.THRESH_OTSU)
     th_2, _ = cv2.threshold(hsv[..., 2], 0, 255, cv2.THRESH_OTSU)
-    
-    mask = ((hsv[..., 1] > th_1) + (hsv[..., 2] < th_2)).astype('uint8')
+
+    valid = (hsv[..., 2] > 16) * (hsv[..., 1] > 16)
+    mask = (((hsv[..., 1] > th_1) + (hsv[..., 2] < th_2)) * valid).astype('uint8')
     
     # estimate core diameter and spacing
     
